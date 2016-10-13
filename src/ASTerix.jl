@@ -1,4 +1,4 @@
-module AdvancedMacros
+module ASTerix
 
 # package code goes here
 
