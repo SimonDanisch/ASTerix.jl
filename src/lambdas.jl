@@ -1,37 +1,12 @@
-immutable FuncExpr
-    name::Symbol
-    slots
-    args
-    body::Vector
-    returntype::Type
-end
+# type RichMethod
+#     static_parameters
+#     variables
+#     arguments
+#     macro_form
+#     lowered_form
+#     typed_form
+# end
 
-function remove_static_param!(expr, static_parameters)
-    expr # leave any other untouched
-end
-function remove_static_param!(expr::Vector, static_parameters)
-    map!(e->remove_static_param!(e, static_parameters), expr)
-end
-function remove_static_param!(expr::Expr, static_parameters)
-    if expr.head == :static_parameter
-        idx = expr.args[1]
-        return static_parameters[idx]
-    else
-        remove_static_param!(expr.args, static_parameters)
-        expr
-    end
-end
-
-function FuncExpr(f, types)
-    if isa(f, Core.IntrinsicFunction)
-        error("$f is an intrinsic function which can't be transpiled")
-    end
-    lam_typed, ret_type = get_lambda(code_typed, f, types)
-    slots = slot_mapping(lam_typed)
-    ast = lam_typed.code
-    name = Symbol(f)
-    FuncExpr(name, slots, view(slots, 2:(length(slots))), ast, ret_type)
-end
 function slot_mapping(lam_typed)
     if isa(lam_typed.slotnames, Void) || isa(lam_typed.slottypes, Void)
         return [(SlotNumber(-1), ("", Void))]
@@ -43,7 +18,6 @@ function slot_mapping(lam_typed)
     ssaslot = [(SSAValue(i-1), ("ssa_$(i-1)", t)) for (i,t) in enumerate(lam_typed.ssavaluetypes)]
     vcat(slots, ssaslot)
 end
-
 
 function get_lambda(pass, f, types)
     lambda = pass(f, types)
@@ -59,49 +33,41 @@ function get_lambda(pass, f, types)
     end
 end
 
-#function ast_macro(f, types)
-function test{T}(a::T, b)
-    c = a+b::T
-    if c == 10
-        for i=1:7
-            c += rand(Bool) ? 1 : 2
-        end
-    end
-    f = (x,y) -> x^y
-    c, f
-end
-test2{T, T2}(a::T, b::T2) = a + b
-
-
-function get_ast(li::CodeInfo)
-    ast = li.code
-    if isa(ast, Vector{UInt8})
-        return Base.uncompressed_ast(li)
-    end
-    ast
-end
 function get_method(f, types)
-    first(methods(f, types))
+    if !all(isleaftype, types)
+        error("Not all types are concrete: $types")
+    end
+    if !applicable(f, types)
+        error("Method $f with signature $types not defined")
+    end
+    precompile(f, types) # make sure there is a specialization
+    x = methods(f, types)
+    if length(x) != 1
+        error("
+            More than one method found for signature $f $types.
+            Please use more specific types!
+        ")
+    end
+    first(x)
 end
-
 
 function macro_form(f, types)
     m = get_method(f, types)
     file = string(m.file)
     linestart = m.line
+    @show file linestart
     code, str = open(file) do io
         line = ""
         for i=1:linestart-1
             line = readline(io)
         end
-        # if !contains(line, string(m.name))
-        #     line = readline(io)
-        # end
+        @show line
         try # lines can be one off, which will result in a parse error
             parse(line)
         catch e
             line = readline(io)
         end
+        @show line
         while !eof(io)
             line = line*readline(io)
             e = Base.parse_input_line(line; filename=file)
@@ -112,20 +78,7 @@ function macro_form(f, types)
     end
     code, str
 end
-body = code.args[2].args
 
-showfn(x) = println(fieldnames(x))
-type RichMethod
-    static_parameters
-    variables
-    arguments
-    macro_form
-    lowered_form
-    typed_form
-end
-function lolz{T1, T2}(a::T1, b::T2)
-    a+b
-end
 
 # deal with all variances in base that should really be tuples but are something else
 _tuple(x) = (x,)
@@ -134,31 +87,163 @@ _tuple(x::Tuple) = x
 _tuple{T<:Tuple}(x::Type{T}) = tuple(x.parameters...)
 
 function get_static_parameters(f, types)
-    precompile(f, types) # make sure there is a specialization
     m = get_method(f, types)
     mi = m.specializations.func
     spnames = map(x->x.name, _tuple(m.tvars))
     sptypes = _tuple(mi.sparam_vals)
-    map(tuple, zip(spnames, sptypes))
+    spnames, sptypes
 end
-get_static_parameters(test2, (Int, Int))
-for k in fieldnames(m)
-    if isdefined(m, k)
-        println(k, " ", getfield(m, k))
+
+function get_ast(li::LambdaInfo)
+    ast = li.code
+    if isa(ast, Vector{UInt8})
+        return Base.uncompressed_ast(li)
+    end
+    ast
+end
+
+function filter_expr(keep, ast)
+    replace_or_drop(x->(false, x), x->!keep(x), identity, Any[ast])[1]
+end
+function replace_expr(f, ast)
+    replace_or_drop(f, x->false, Any[ast])[1]#ever drop
+end
+function replace_or_drop(f, drop, ast::Vector, result=[])
+    for elem in ast
+        replace_or_drop(f, drop, elem, result)
+    end
+    result
+end
+
+function replace_or_drop(f, drop, ast, result=[])
+    drop(ast) && return result
+    replace, replacement = f(ast)
+    if replace
+        push!(result, replacement)
+    else
+        expr = if isa(ast, Expr)
+            nexpr = Expr(ast.head)
+            @show nexpr
+            replace_or_drop(f, drop, ast.args, nexpr.args)
+            nexpr
+        else
+            ast
+        end
+        push!(result, expr)
+    end
+    result
+end
+
+function remove_static_params(ast, static_params)
+    sp_names, sp_types = static_params
+    replace_expr(ast) do expr
+        if isa(expr, Symbol)
+            idx = findfirst(sp_names, expr)
+            if idx != 0
+                return true, sp_types[idx]
+            end
+        end
+        false, expr
     end
 end
-typed_lam = get_lambda(code_lowered, f, types)
-typed_lam, ret_typ = get_lambda(code_typed, f, types)
-typed_ast = get_ast(typed_lam)
-f()
-f = test
-types = (Int, Int)
-lambda = get_lambda(code_lowered, f, types)
 
-ast = get_ast(lambda)
+_typeof{T}(x::Type{T}) = Type{T}
+_typeof{T}(x::T) = T
+function extract_type(x::Symbol, slots)
+    m = current_module()
+    if isdefined(m, x)
+        _typeof(getfield(m, x))
+    else
+        Symbol
+    end
+end
+extract_type{T}(x::T, slots) = T
+function extract_type(x::Expr, slots)
+    if x.head == :(::)
+        x.args[2]
+    else
+        extract_type(add_typing(x, slots), slots)
+    end
+end
+
+function get_func(x::Expr)
+    x.head == :curly && return get_func(x.args[1])
+end
+function get_func(x::Symbol)
+    getfield(current_module(), x)
+end
+function get_func(x::GlobalRef)
+    getfield(x.mod, x.name)
+end
+function extract_func(x::Expr, slots)
+    @assert x.head == :call
+    f = get_func(x.args[1])
+    args = x.args[2:end]
+    typed = add_typing(args, slots)
+    _typed = !isa(typed, Vector) ? Any[typed] :typed
+    f, _typed
+end
+
+function return_type(f, types)
+    x = Base.return_types(f, types)
+    if length(x) == 1
+        x[1]
+    else
+        Union{x...}
+    end
+end
+
+function add_typing(ast, slot_dict)
+    replace_expr(ast) do x
+        if isa(x, Expr) && x.head == :-> # cant type dem lambdas
+            return true, x
+        end
+        if isa(x, Expr) && x.head == :(::) # already typed
+            return true, x
+        end
+        if haskey(slot_dict, x)
+            return true, Expr(:(::), x, slot_dict[x])
+        end
+        if is_call(x)
+            f, typed_args = extract_func(x, slot_dict)
+            types = tuple(map(x->extract_type(x, slot_dict), typed_args)...)
+            T = return_type(f, types)
+            x.args[2:end] = typed_args # type args
+            return true, Expr(:(::), x, T)
+        end
+        return false, x
+    end
+end
+
+is_linenumber(x) = false
+is_linenumber(x::LineNumberNode) = true
+function is_linenumber(x::Expr)
+    x.head == :line
+end
+
+is_call(x) = false
+function is_call(x::Expr)
+    x.head == :call
+end
 
 
-function map_if_assignement(x::Expr)
-    if x.head == :(=)
 
+
+function clean_form(f, types)
+    ast, str = macro_form(f, types)
+    static_params = get_static_parameters(f, types)
+    ast = filter_expr(x->!is_linenumber(x), ast)
+    remove_static_params(ast, static_params)
+end
+function clean_typed(f, types)
+    ast = clean_form(f, types)
+    slots = slot_mapping(get_lambda(code_typed, f, types))
+    slot_dict = Dict()
+    for (k, (name, T)) in slots 
+        if !isa(k, SSAValue)       
+            slot_dict[k] = T            
+        end                         
+        slot_dict[Symbol(name)] = T         
+    end   
+    add_typing(ast, slot_dict)
 end
