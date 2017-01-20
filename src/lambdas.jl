@@ -226,7 +226,10 @@ function is_call(x::Expr)
     x.head == :call
 end
 
-
+using Plots; glvisualize()
+using GLVisualize
+plot(rand(100))
+w = GLVisualize.current_screen()
 
 
 function clean_form(f, types)
@@ -239,11 +242,11 @@ function clean_typed(f, types)
     ast = clean_form(f, types)
     slots = slot_mapping(get_lambda(code_typed, f, types))
     slot_dict = Dict()
-    for (k, (name, T)) in slots 
-        if !isa(k, SSAValue)       
-            slot_dict[k] = T            
-        end                         
-        slot_dict[Symbol(name)] = T         
-    end   
+    for (k, (name, T)) in slots
+        if !isa(k, SSAValue)
+            slot_dict[k] = T
+        end
+        slot_dict[Symbol(name)] = T
+    end
     add_typing(ast, slot_dict)
 end

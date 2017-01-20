@@ -2,7 +2,7 @@ abstract MatchSteering
 immutable NotGreedy <: MatchSteering
 	x
 end
-Base.:(*)(x, ::typeof(*)) = NotGreedy(x)
+
 isgreedy(x::NotGreedy) = false
 isgreedy(x) = true
 
@@ -10,7 +10,7 @@ trymatch(ms::MatchSteering, val) = trymatch(ms.x, val)
 trymatch(f::Function, val) = f(val)
 trymatch(val1, val2) = val1 == val2
 
-function ismatch{N}(x, atoms::Vararg{Any, N}; matchall=false)
+function ismatch{N}(x, atoms::Vararg{Any, N}; matchall = false)
 	matches = NTuple{N, Vector{Any}}[]
 	current_atom = 1
 	states, tmp_matches = [], ntuple(x->Any[], Val{N})
@@ -28,7 +28,8 @@ function ismatch{N}(x, atoms::Vararg{Any, N}; matchall=false)
 			done(x, state) && return matches, states
 			elem, state = next(x, state)
 		end
-		matched_state = ifelse(current_atom==1, state, matched_state)
+		# if at first atom, we remember the first match, else don't modify it!
+		matched_state = ifelse(current_atom == 1, state, matched_state)
 		ismatched = false
 		while trymatch(atom, elem)
 			ismatched = true
@@ -58,7 +59,7 @@ function forward(x, state, elem, n)
 	elem, state
 end
 
-function _replace(f, x, atoms...; matchall=false)
+function _replace(f, x, atoms...; matchall = false)
 	matches, states = ismatch(x, atoms..., matchall=matchall)
 	if isempty(matches)
 		return copy(x)
