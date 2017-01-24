@@ -22,30 +22,15 @@ function get_ast(li::LambdaInfo)
     ast
 end
 
-
-"""
-Replaces `goto` statements in a loop body with continue and break.
-"""
-function replace_continue_break(astlist, continue_label, break_label)
-    map(astlist) do elem
-        if isa(elem, GotoNode) && elem.label == continue_label.label
-            Expr(:continue)
-        elseif isa(elem, GotoNode) && elem.label == break_label.label
-            Expr(:break)
-        else
-            elem
-        end
-    end
-end
 function remove_goto(ast)
     # if else
     ifelse_pattern = (
         isunless, # if branch
         anything, # if body
         isgoto, # goto to jump over else
-        (l,h)->is_unless_label(l, h, 1),
+        (l,h)-> is_unless_label(l, h, 1),
         anything,   # else body
-        (l,h)->is_goto_label(l, h, 3) # label matching above goto
+        (l,h)-> is_goto_label(l, h, 3) # label matching above goto
     )
     ast = _replace(ast, ifelse_pattern) do unless, ifbody, _1, _2, elsebody, _3
         condition = unless.args[1]
